@@ -34,16 +34,25 @@ async function postToSlack(channelId: string, fn: () => Promise<void>) {
   entry.processing = false;
 }
 
-// /new <task> — start a session
+// /new [--dir /path] <task> — start a session, optionally in a specific directory
 app.message(/^\/new(.*)$/, async ({ message, say }) => {
   if (message.subtype) return;
   const msg = message as any;
-  const initialPrompt = msg.text.replace(/^\/new\s*/, "").trim();
+  let rawArgs = msg.text.replace(/^\/new\s*/, "").trim();
 
-  if (!initialPrompt) {
-    await say("Start a session with: `/new <your task description>`");
+  if (!rawArgs) {
+    await say("Start a session with: `/new <task>` or `/new --dir /path/to/project <task>`");
     return;
   }
+
+  // Parse --dir flag if present
+  let cwd: string | undefined;
+  const dirMatch = rawArgs.match(/^--dir\s+(\S+)\s+(.+)$/);
+  if (dirMatch) {
+    cwd = dirMatch[1].replace(/^~/, process.env.HOME || "~");
+    rawArgs = dirMatch[2];
+  }
+  const initialPrompt = rawArgs;
 
   const channelId = msg.channel;
 
@@ -52,7 +61,8 @@ app.message(/^\/new(.*)$/, async ({ message, say }) => {
     return;
   }
 
-  await say(`🚀 *Starting session...*\n> ${initialPrompt}`);
+  const dirLabel = cwd ? ` in \`${cwd}\`` : "";
+  await say(`🚀 *Starting session${dirLabel}...*\n> ${initialPrompt}`);
 
   sessions.startSession(channelId, initialPrompt, async (event) => {
     if (event.type === "text") {
@@ -92,7 +102,7 @@ app.message(/^\/new(.*)$/, async ({ message, say }) => {
         }) as Promise<any>
       );
     }
-  });
+  }, cwd);
 });
 
 // /end — kill session
@@ -148,7 +158,7 @@ app.message(async ({ message, say }) => {
 (async () => {
   await app.start();
   console.log("⚡ Claude Code Slack bridge running");
-  console.log("Commands: /new <task> | /end | /status");
+  console.log("Commands: /new [--dir /path] <task> | /end | /status");
 
   const shutdown = () => {
     console.log("\nShutting down...");

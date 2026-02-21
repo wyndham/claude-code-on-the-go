@@ -43,8 +43,8 @@ export class SessionManager {
     };
   }
 
-  startSession(channelId: string, initialPrompt: string, callback: EventCallback) {
-    const cwd = process.env.CLAUDE_WORK_DIR || process.cwd();
+  startSession(channelId: string, initialPrompt: string, callback: EventCallback, cwd?: string) {
+    cwd = cwd || process.env.CLAUDE_WORK_DIR || process.cwd();
 
     // Build args — configurable via env vars
     const args = ["--output-format", "stream-json", "--verbose"];
