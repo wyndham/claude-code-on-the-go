@@ -43,7 +43,7 @@ export class SessionManager {
     };
   }
 
-  startSession(channelId: string, initialPrompt: string, callback: EventCallback, cwd?: string) {
+  startSession(channelId: string, initialPrompt: string | undefined, callback: EventCallback, cwd?: string) {
     cwd = cwd || process.env.CLAUDE_WORK_DIR || process.cwd();
 
     // Build args — configurable via env vars
@@ -71,9 +71,9 @@ export class SessionManager {
       process: proc,
       callback,
       startedAt: new Date().toLocaleString(),
-      messageCount: 1,
+      messageCount: 0,
       cwd,
-      waitingForInput: false,
+      waitingForInput: !initialPrompt,
       active: true,
       pendingMessage: null,
     };
@@ -81,8 +81,9 @@ export class SessionManager {
     this.sessions.set(channelId, session);
     this.attachHandlers(channelId, session);
 
-    // Kick off with initial prompt
-    if (proc.stdin && !proc.stdin.destroyed) {
+    // Kick off with initial prompt, or wait for user's first message
+    if (initialPrompt && proc.stdin && !proc.stdin.destroyed) {
+      session.messageCount = 1;
       proc.stdin.write(initialPrompt + "\n");
     }
   }

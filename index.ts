@@ -34,25 +34,20 @@ async function postToSlack(channelId: string, fn: () => Promise<void>) {
   entry.processing = false;
 }
 
-// !new [--dir /path] <task> — start a session, optionally in a specific directory
+// !new [--dir /path] [task] — start a session, optionally in a specific directory
 app.message(/^\!new(.*)$/, async ({ message, say }) => {
   if (message.subtype) return;
   const msg = message as any;
   let rawArgs = msg.text.replace(/^\!new\s*/, "").trim();
 
-  if (!rawArgs) {
-    await say("Start a session with: `!new <task>` or `!new --dir /path/to/project <task>`");
-    return;
-  }
-
   // Parse --dir flag if present
   let cwd: string | undefined;
-  const dirMatch = rawArgs.match(/^--dir\s+(\S+)\s+(.+)$/);
+  const dirMatch = rawArgs.match(/^--dir\s+(\S+)(?:\s+(.+))?$/);
   if (dirMatch) {
     cwd = dirMatch[1].replace(/^~/, process.env.HOME || "~");
-    rawArgs = dirMatch[2];
+    rawArgs = (dirMatch[2] || "").trim();
   }
-  const initialPrompt = rawArgs;
+  const initialPrompt = rawArgs || undefined;
 
   const channelId = msg.channel;
 
@@ -62,7 +57,8 @@ app.message(/^\!new(.*)$/, async ({ message, say }) => {
   }
 
   const dirLabel = cwd ? ` in \`${cwd}\`` : "";
-  await say(`🚀 *Starting session${dirLabel}...*\n> ${initialPrompt}`);
+  const taskLabel = initialPrompt ? `\n> ${initialPrompt}` : "";
+  await say(`🚀 *Starting session${dirLabel}...*${taskLabel}`);
 
   sessions.startSession(channelId, initialPrompt, async (event) => {
     if (event.type === "text") {
