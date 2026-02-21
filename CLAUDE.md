@@ -20,7 +20,7 @@ Slack channel  -->  index.ts (Bolt app, socket mode)
 
 ### Files
 
-- **index.ts** - Slack Bolt app. Handles `/new`, `/end`, `/status` commands and routes all other messages to the active session. Includes a per-channel rate-limiting queue for Slack API calls (~1 msg/sec).
+- **index.ts** - Slack Bolt app. Handles `!new`, `!end`, `!status` commands and routes all other messages to the active session. Includes a per-channel rate-limiting queue for Slack API calls (~1 msg/sec). `!new` supports `--dir` flag for per-session working directories.
 - **session-manager.ts** - Spawns and manages Claude CLI child processes. Parses the stream-json output, handles turn sequencing (waitingForInput flag), queues messages sent while Claude is busy, and auto-sends them when the turn ends. Uses a serial async queue to prevent readline callback interleaving.
 - **formatter.ts** - Converts Claude's markdown to Slack mrkdwn (bold, headers, code blocks, horizontal rules).
 
@@ -53,12 +53,12 @@ Set in `.env` (loaded via dotenv):
 | `SLACK_APP_TOKEN` | yes | Slack app token (`xapp-...`) with `connections:write` |
 | `SLACK_SIGNING_SECRET` | yes | Slack signing secret |
 | `CLAUDE_WORK_DIR` | no | Working directory for Claude (defaults to `process.cwd()`) |
-| `CLAUDE_CONTINUE` | no | Set `true` to resume last session on `/new` |
+| `CLAUDE_CONTINUE` | no | Set `true` to resume last session on `!new` |
 | `CLAUDE_SKIP_PERMISSIONS` | no | Set `true` to pass `--dangerously-skip-permissions` |
 
 ## Session event flow
 
-1. User sends `/new <task>` in Slack
+1. User sends `!new <task>` (or `!new --dir /path <task>`) in Slack
 2. `SessionManager.startSession()` spawns `claude --output-format stream-json --verbose`
 3. Initial prompt written to stdin
 4. Claude's stdout emits JSON lines:
@@ -75,4 +75,4 @@ Set in `.env` (loaded via dotenv):
 - No classes in index.ts, functional style for Slack handlers
 - `SessionManager` is the only class, owns all process lifecycle
 - Avoid adding dependencies unless necessary - this is intentionally minimal (~3 files)
-- Commands are regex-matched as plain messages (`/new`, `/end`, `/status`), not Slack slash commands
+- Commands use `!` prefix (`!new`, `!end`, `!status`) — plain messages, not Slack slash commands (Slack intercepts `/`)

@@ -34,14 +34,14 @@ async function postToSlack(channelId: string, fn: () => Promise<void>) {
   entry.processing = false;
 }
 
-// /new [--dir /path] <task> — start a session, optionally in a specific directory
-app.message(/^\/new(.*)$/, async ({ message, say }) => {
+// !new [--dir /path] <task> — start a session, optionally in a specific directory
+app.message(/^\!new(.*)$/, async ({ message, say }) => {
   if (message.subtype) return;
   const msg = message as any;
-  let rawArgs = msg.text.replace(/^\/new\s*/, "").trim();
+  let rawArgs = msg.text.replace(/^\!new\s*/, "").trim();
 
   if (!rawArgs) {
-    await say("Start a session with: `/new <task>` or `/new --dir /path/to/project <task>`");
+    await say("Start a session with: `!new <task>` or `!new --dir /path/to/project <task>`");
     return;
   }
 
@@ -57,7 +57,7 @@ app.message(/^\/new(.*)$/, async ({ message, say }) => {
   const channelId = msg.channel;
 
   if (sessions.hasActiveSession(channelId)) {
-    await say("⚠️ Active session already running here. Type `/end` to close it first.");
+    await say("⚠️ Active session already running here. Type `!end` to close it first.");
     return;
   }
 
@@ -91,7 +91,7 @@ app.message(/^\/new(.*)$/, async ({ message, say }) => {
       await postToSlack(channelId, () =>
         app.client.chat.postMessage({
           channel: channelId,
-          text: `✅ *Session complete.* Type \`/new <task>\` to start another.`,
+          text: `✅ *Session complete.* Type \`!new <task>\` to start another.`,
         }) as Promise<any>
       );
     } else if (event.type === "error") {
@@ -105,8 +105,8 @@ app.message(/^\/new(.*)$/, async ({ message, say }) => {
   }, cwd);
 });
 
-// /end — kill session
-app.message(/^\/end$/, async ({ message, say }) => {
+// !end — kill session
+app.message(/^\!end$/, async ({ message, say }) => {
   if (message.subtype) return;
   const msg = message as any;
 
@@ -119,14 +119,14 @@ app.message(/^\/end$/, async ({ message, say }) => {
   await say("🛑 Session ended.");
 });
 
-// /status
-app.message(/^\/status$/, async ({ message, say }) => {
+// !status
+app.message(/^\!status$/, async ({ message, say }) => {
   if (message.subtype) return;
   const msg = message as any;
   const info = sessions.getSessionInfo(msg.channel);
 
   if (!info) {
-    await say("No active session. Start one with `/new <task>`");
+    await say("No active session. Start one with `!new <task>`");
     return;
   }
 
@@ -140,7 +140,7 @@ app.message(async ({ message, say }) => {
   if (!msg.text) return;
 
   // Skip commands already handled above
-  if (/^\/(new|end|status)/.test(msg.text)) return;
+  if (/^!(new|end|status)/.test(msg.text)) return;
   // Skip bot messages
   if (msg.bot_id) return;
 
@@ -148,7 +148,7 @@ app.message(async ({ message, say }) => {
   const result = sessions.sendMessage(channelId, msg.text);
 
   if (result === "no_session") {
-    await say("No active session. Start one with `/new <task>`");
+    await say("No active session. Start one with `!new <task>`");
   } else if (result === "queued") {
     await say("⏳ _Claude is still working — your message is queued and will be sent when this turn finishes._");
   }
@@ -158,7 +158,7 @@ app.message(async ({ message, say }) => {
 (async () => {
   await app.start();
   console.log("⚡ Claude Code Slack bridge running");
-  console.log("Commands: /new [--dir /path] <task> | /end | /status");
+  console.log("Commands: !new [--dir /path] <task> | !end | !status");
 
   const shutdown = () => {
     console.log("\nShutting down...");

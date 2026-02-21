@@ -14,10 +14,11 @@ You (Slack)  ←→  Bot  ←→  Claude Code (running on your machine)
 
 | Command | What it does |
 |---|---|
-| `/new <task>` | Start a Claude Code session with a task |
+| `!new <task>` | Start a Claude Code session with a task |
+| `!new --dir /path <task>` | Start a session in a specific directory |
 | Any message | Sent directly to the active session |
-| `/end` | Kill the current session |
-| `/status` | Show session info |
+| `!end` | Kill the current session |
+| `!status` | Show session info |
 
 ## Setup
 
@@ -99,7 +100,8 @@ In Slack: `/invite @Claude Code` in whatever channel you want to use.
 ## Usage tips
 
 - **One channel per project/task** — keeps context clean and the channel history serves as a memory log for future sessions
-- **Start a new session** in a dedicated channel: `/new refactor the Atlas pricing component`
+- **Start a new session** in a dedicated channel: `!new refactor the Atlas pricing component`
+- **Target a specific project**: `!new --dir ~/projects/my-app fix the login bug`
 - **Just reply naturally** — your messages go straight to Claude, exactly like typing in the terminal
 - **Check what Claude is doing** — tool use (file reads, bash commands) is surfaced as small status messages so you're not in the dark
 - **Session memory** — at the start of future sessions, you can paste in a summary from the channel history or ask Claude to read recent context
