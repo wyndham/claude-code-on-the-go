@@ -18,6 +18,7 @@ interface Session {
   cwd: string;
   waitingForInput: boolean;    // true when result event received, false mid-turn
   active: boolean;
+  pendingMessage: string | null; // queued message sent while Claude was busy
 }
 
 export class SessionManager {
@@ -74,13 +75,16 @@ export class SessionManager {
       cwd,
       waitingForInput: false,
       active: true,
+      pendingMessage: null,
     };
 
     this.sessions.set(channelId, session);
     this.attachHandlers(channelId, session);
 
     // Kick off with initial prompt
-    proc.stdin!.write(initialPrompt + "\n");
+    if (proc.stdin && !proc.stdin.destroyed) {
+      proc.stdin.write(initialPrompt + "\n");
+    }
   }
 
   private attachHandlers(channelId: string, session: Session) {
@@ -88,6 +92,11 @@ export class SessionManager {
     let accumulatedText = "";
     let lastToolDesc = "";
     let flushTimer: NodeJS.Timeout | null = null;
+
+    // Serial async queue — ensures readline events are processed in order
+    // even though handlers are async (readline doesn't respect backpressure)
+    let lineQueue: string[] = [];
+    let processingLines = false;
 
     const flushText = async () => {
       if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
@@ -97,7 +106,7 @@ export class SessionManager {
       }
     };
 
-    rl.on("line", async (line) => {
+    const processLine = async (line: string) => {
       if (!line.trim()) return;
 
       let event: any;
@@ -128,12 +137,39 @@ export class SessionManager {
       } else if (event.type === "result") {
         // ← KEY MOMENT: Claude finished a turn and is now idle on stdin
         await flushText();
-        session.waitingForInput = true;
-        await session.callback({ type: "waiting" });
+
+        // If a message was queued while Claude was busy, auto-send it now
+        if (session.pendingMessage !== null) {
+          const queued = session.pendingMessage;
+          session.pendingMessage = null;
+          session.messageCount++;
+          if (session.process.stdin && !session.process.stdin.destroyed) {
+            session.process.stdin.write(queued + "\n");
+          }
+          // Don't emit "waiting" — Claude is immediately resuming
+        } else {
+          session.waitingForInput = true;
+          await session.callback({ type: "waiting" });
+        }
 
       } else if (event.type === "system" && event.subtype === "init") {
         // Startup noise — ignore
       }
+    };
+
+    const drainQueue = async () => {
+      if (processingLines) return;
+      processingLines = true;
+      while (lineQueue.length > 0) {
+        const line = lineQueue.shift()!;
+        try { await processLine(line); } catch (err) { console.error(`[${channelId}] line error:`, err); }
+      }
+      processingLines = false;
+    };
+
+    rl.on("line", (line) => {
+      lineQueue.push(line);
+      drainQueue();
     });
 
     session.process.stderr!.on("data", (data) => {
@@ -167,18 +203,26 @@ export class SessionManager {
    * Send a user message to the session.
    *
    * "accepted"  — Claude was waiting, message sent, session resumes
-   * "busy"      — Claude is mid-turn; tell user to wait for 💬 prompt
+   * "queued"    — Claude is mid-turn; message saved and will auto-send when Claude finishes
    * "no_session" — no session in this channel
    */
-  sendMessage(channelId: string, text: string): "accepted" | "busy" | "no_session" {
+  sendMessage(channelId: string, text: string): "accepted" | "queued" | "no_session" {
     const session = this.sessions.get(channelId);
     if (!session) return "no_session";
 
-    if (!session.waitingForInput) return "busy";
+    if (!session.waitingForInput) {
+      // Queue the message — will be sent automatically when Claude's turn ends
+      session.pendingMessage = text;
+      return "queued";
+    }
+
+    if (!session.process.stdin || session.process.stdin.destroyed) {
+      return "no_session";
+    }
 
     session.waitingForInput = false;
     session.messageCount++;
-    session.process.stdin!.write(text + "\n");
+    session.process.stdin.write(text + "\n");
     return "accepted";
   }
 
@@ -188,6 +232,12 @@ export class SessionManager {
     session.active = false;
     try { session.process.kill("SIGTERM"); } catch {}
     this.sessions.delete(channelId);
+  }
+
+  endAllSessions() {
+    for (const [channelId] of this.sessions) {
+      this.endSession(channelId);
+    }
   }
 }
 

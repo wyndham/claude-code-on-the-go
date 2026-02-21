@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { App, LogLevel } from "@slack/bolt";
 import { SessionManager } from "./session-manager";
 import { formatForSlack } from "./formatter";
@@ -10,6 +11,28 @@ const app = new App({
 });
 
 const sessions = new SessionManager();
+
+// Per-channel message queue — throttles Slack API calls to ~1/sec to avoid rate limits
+const messageQueues = new Map<string, { queue: Array<() => Promise<void>>; processing: boolean }>();
+
+async function postToSlack(channelId: string, fn: () => Promise<void>) {
+  let entry = messageQueues.get(channelId);
+  if (!entry) {
+    entry = { queue: [], processing: false };
+    messageQueues.set(channelId, entry);
+  }
+  entry.queue.push(fn);
+  if (entry.processing) return;
+  entry.processing = true;
+  while (entry.queue.length > 0) {
+    const next = entry.queue.shift()!;
+    try { await next(); } catch (err) { console.error(`[${channelId}] Slack post error:`, err); }
+    if (entry.queue.length > 0) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  entry.processing = false;
+}
 
 // /new <task> — start a session
 app.message(/^\/new(.*)$/, async ({ message, say }) => {
@@ -33,31 +56,41 @@ app.message(/^\/new(.*)$/, async ({ message, say }) => {
 
   sessions.startSession(channelId, initialPrompt, async (event) => {
     if (event.type === "text") {
-      await app.client.chat.postMessage({
-        channel: channelId,
-        text: formatForSlack(event.content),
-        unfurl_links: false,
-      });
+      await postToSlack(channelId, () =>
+        app.client.chat.postMessage({
+          channel: channelId,
+          text: formatForSlack(event.content),
+          unfurl_links: false,
+        }) as Promise<any>
+      );
     } else if (event.type === "tool_use") {
-      await app.client.chat.postMessage({
-        channel: channelId,
-        text: `🔧 ${event.content}`,
-      });
+      await postToSlack(channelId, () =>
+        app.client.chat.postMessage({
+          channel: channelId,
+          text: `🔧 ${event.content}`,
+        }) as Promise<any>
+      );
     } else if (event.type === "waiting") {
-      await app.client.chat.postMessage({
-        channel: channelId,
-        text: `💬 _Waiting for your reply..._`,
-      });
+      await postToSlack(channelId, () =>
+        app.client.chat.postMessage({
+          channel: channelId,
+          text: `💬 _Waiting for your reply..._`,
+        }) as Promise<any>
+      );
     } else if (event.type === "complete") {
-      await app.client.chat.postMessage({
-        channel: channelId,
-        text: `✅ *Session complete.* Type \`/new <task>\` to start another.`,
-      });
+      await postToSlack(channelId, () =>
+        app.client.chat.postMessage({
+          channel: channelId,
+          text: `✅ *Session complete.* Type \`/new <task>\` to start another.`,
+        }) as Promise<any>
+      );
     } else if (event.type === "error") {
-      await app.client.chat.postMessage({
-        channel: channelId,
-        text: `❌ *Error:* ${event.content}`,
-      });
+      await postToSlack(channelId, () =>
+        app.client.chat.postMessage({
+          channel: channelId,
+          text: `❌ *Error:* ${event.content}`,
+        }) as Promise<any>
+      );
     }
   });
 });
@@ -106,10 +139,8 @@ app.message(async ({ message, say }) => {
 
   if (result === "no_session") {
     await say("No active session. Start one with `/new <task>`");
-  } else if (result === "busy") {
-    // Claude is mid-turn — acknowledge but don't drop the message
-    // Optionally queue it; for now just let the user know
-    await say("⏳ _Claude is still working... reply again once you see the_ 💬 _prompt._");
+  } else if (result === "queued") {
+    await say("⏳ _Claude is still working — your message is queued and will be sent when this turn finishes._");
   }
   // "accepted" — no reply needed, session will post when ready
 });
@@ -118,4 +149,12 @@ app.message(async ({ message, say }) => {
   await app.start();
   console.log("⚡ Claude Code Slack bridge running");
   console.log("Commands: /new <task> | /end | /status");
+
+  const shutdown = () => {
+    console.log("\nShutting down...");
+    sessions.endAllSessions();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 })();
