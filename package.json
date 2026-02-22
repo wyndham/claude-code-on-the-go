@@ -9,7 +9,7 @@
     "dev": "tsx watch index.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.50",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.50",
     "@slack/bolt": "^3.18.0",
     "dotenv": "^16.4.0"
   },

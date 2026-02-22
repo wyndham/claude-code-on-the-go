@@ -1,4 +1,5 @@
-import { query } from "@anthropic-ai/claude-code";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, Query } from "@anthropic-ai/claude-agent-sdk";
 
 export type SessionEvent =
   | { type: "text"; content: string }
@@ -17,7 +18,7 @@ interface Session {
   waitingForInput: boolean;
   active: boolean;
   pendingMessage: string | null;
-  abortController: AbortController | null;
+  activeQuery: Query | null;
 }
 
 export class SessionManager {
@@ -50,7 +51,7 @@ export class SessionManager {
       waitingForInput: !initialPrompt,
       active: true,
       pendingMessage: null,
-      abortController: null,
+      activeQuery: null,
     };
 
     this.sessions.set(channelId, session);
@@ -65,12 +66,9 @@ export class SessionManager {
     session.waitingForInput = false;
     session.messageCount++;
 
-    const abortController = new AbortController();
-    session.abortController = abortController;
-
-    const options: any = {
-      outputFormat: "stream-json",
+    const options: Options = {
       cwd: session.cwd,
+      abortController: new AbortController(),
     };
 
     if (session.sessionId) {
@@ -81,6 +79,7 @@ export class SessionManager {
 
     if (process.env.CLAUDE_SKIP_PERMISSIONS === "true") {
       options.permissionMode = "bypassPermissions";
+      options.allowDangerouslySkipPermissions = true;
     }
 
     console.log(`[${channelId}] Turn started: "${prompt.substring(0, 80)}"${session.sessionId ? ` (resume ${session.sessionId.substring(0, 8)}...)` : ""}`);
@@ -98,17 +97,25 @@ export class SessionManager {
     };
 
     try {
-      for await (const message of query({ prompt, abortController, options })) {
+      const q = query({ prompt, options });
+      session.activeQuery = q;
+
+      for await (const message of q) {
         if (!session.active) break;
 
-        // Capture session ID
-        if ((message as any).session_id && !session.sessionId) {
-          session.sessionId = (message as any).session_id;
+        // Capture session ID from any message
+        if ("session_id" in message && message.session_id && !session.sessionId) {
+          session.sessionId = message.session_id;
           console.log(`[${channelId}] Got session_id: ${session.sessionId}`);
         }
 
+        // Debug: log every message type
+        const subtype = "subtype" in message ? `/${message.subtype}` : "";
+        console.log(`[${channelId}] SDK message: ${message.type}${subtype}`);
+
         if (message.type === "assistant") {
           const content = (message as any).message?.content || [];
+          console.log(`[${channelId}] Assistant blocks: ${content.map((b: any) => b.type).join(", ") || "(empty)"}`);
           for (const block of content) {
             if (block.type === "text" && block.text?.trim()) {
               accumulatedText += block.text;
@@ -125,7 +132,8 @@ export class SessionManager {
           }
         } else if (message.type === "result") {
           await flushText();
-          console.log(`[${channelId}] Turn complete (cost: $${(message as any).total_cost_usd?.toFixed(4) || "?"})`);
+          const cost = (message as any).total_cost_usd;
+          console.log(`[${channelId}] Turn complete (cost: $${cost?.toFixed(4) || "?"})`);
         }
       }
     } catch (err: any) {
@@ -139,7 +147,7 @@ export class SessionManager {
       return;
     }
 
-    session.abortController = null;
+    session.activeQuery = null;
 
     if (!session.active) return;
 
@@ -171,8 +179,8 @@ export class SessionManager {
     const session = this.sessions.get(channelId);
     if (!session) return;
     session.active = false;
-    if (session.abortController) {
-      session.abortController.abort();
+    if (session.activeQuery) {
+      session.activeQuery.close();
     }
     this.sessions.delete(channelId);
   }
