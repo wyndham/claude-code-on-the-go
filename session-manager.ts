@@ -193,16 +193,27 @@ export class SessionManager {
 }
 
 function formatToolUse(block: any): string {
-  const name = block.name || "unknown";
+  const name = (block.name || "unknown").toLowerCase();
   const input = block.input || {};
   switch (name) {
-    case "bash":        return `bash: \`${(input.command || "").substring(0, 100)}\``;
-    case "read":        return `read: \`${input.file_path || input.path || ""}\``;
-    case "write":       return `write: \`${input.file_path || input.path || ""}\``;
+    case "bash":          return `Bash: \`${(input.command || "").substring(0, 120)}\``;
+    case "read":          return `Read: \`${input.file_path || input.path || ""}\``;
+    case "write":         return `Write: \`${input.file_path || input.path || ""}\``;
     case "edit":
-    case "str_replace": return `edit: \`${input.path || ""}\``;
-    case "glob":        return `glob: \`${input.pattern || ""}\``;
-    case "grep":        return `grep: \`${input.pattern || ""}\``;
-    default:            return name;
+    case "str_replace":   return `Edit: \`${input.file_path || input.path || ""}\``;
+    case "glob":          return `Glob: \`${input.pattern || ""}\``;
+    case "grep":          return `Grep: \`${input.pattern || ""}\` in \`${input.path || "."}\``;
+    case "task":          return `Task: ${input.description || input.prompt?.substring(0, 120) || "subagent"}`;
+    case "webfetch":      return `WebFetch: \`${input.url || ""}\``;
+    case "websearch":     return `WebSearch: ${input.query || ""}`;
+    case "notebookedit":  return `NotebookEdit: \`${input.notebook_path || ""}\``;
+    default:              return `${block.name || name}: ${summarizeInput(input)}`;
   }
+}
+
+function summarizeInput(input: Record<string, any>): string {
+  const vals = Object.values(input).filter(v => typeof v === "string" && v.length > 0);
+  if (vals.length === 0) return "";
+  const first = vals[0] as string;
+  return first.length > 120 ? first.substring(0, 120) + "..." : first;
 }
