@@ -83,13 +83,6 @@ app.message(/^\!new(.*)$/, async ({ message, say }) => {
           text: `💬 _Waiting for your reply..._`,
         }) as Promise<any>
       );
-    } else if (event.type === "complete") {
-      await postToSlack(channelId, () =>
-        app.client.chat.postMessage({
-          channel: channelId,
-          text: `✅ *Session complete.* Type \`!new <task>\` to start another.`,
-        }) as Promise<any>
-      );
     } else if (event.type === "error") {
       await postToSlack(channelId, () =>
         app.client.chat.postMessage({
@@ -147,8 +140,9 @@ app.message(async ({ message, say }) => {
     await say("No active session. Start one with `!new <task>`");
   } else if (result === "queued") {
     await say("⏳ _Claude is still working — your message is queued and will be sent when this turn finishes._");
+  } else if (result === "accepted") {
+    await say("⏳ _Working on it..._");
   }
-  // "accepted" — no reply needed, session will post when ready
 });
 
 (async () => {

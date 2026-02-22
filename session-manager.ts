@@ -1,24 +1,23 @@
-import { spawn, ChildProcess } from "child_process";
-import * as readline from "readline";
+import { query } from "@anthropic-ai/claude-code";
 
 export type SessionEvent =
   | { type: "text"; content: string }
   | { type: "tool_use"; content: string }
-  | { type: "waiting" }        // Turn complete — Claude is waiting for your reply
-  | { type: "complete" }       // Session ended naturally
+  | { type: "waiting" }
   | { type: "error"; content: string };
 
 type EventCallback = (event: SessionEvent) => Promise<void>;
 
 interface Session {
-  process: ChildProcess;
   callback: EventCallback;
   startedAt: string;
   messageCount: number;
   cwd: string;
-  waitingForInput: boolean;    // true when result event received, false mid-turn
+  sessionId: string | null;
+  waitingForInput: boolean;
   active: boolean;
-  pendingMessage: string | null; // queued message sent while Claude was busy
+  pendingMessage: string | null;
+  abortController: AbortController | null;
 }
 
 export class SessionManager {
@@ -26,10 +25,6 @@ export class SessionManager {
 
   hasActiveSession(channelId: string): boolean {
     return this.sessions.has(channelId);
-  }
-
-  isWaitingForInput(channelId: string): boolean {
-    return this.sessions.get(channelId)?.waitingForInput ?? false;
   }
 
   getSessionInfo(channelId: string) {
@@ -46,58 +41,53 @@ export class SessionManager {
   startSession(channelId: string, initialPrompt: string | undefined, callback: EventCallback, cwd?: string) {
     cwd = cwd || process.env.CLAUDE_WORK_DIR || process.cwd();
 
-    // Build args — configurable via env vars
-    const args = ["--output-format", "stream-json", "--verbose"];
-
-    // Resume the most recent session in this working directory
-    if (process.env.CLAUDE_CONTINUE === "true") {
-      args.push("--continue");
-    }
-
-    // Skip all permission prompts (file writes, bash commands, etc.)
-    // Only use if you trust the task — removes the mid-session approval step
-    if (process.env.CLAUDE_SKIP_PERMISSIONS === "true") {
-      args.push("--dangerously-skip-permissions");
-    }
-
-    // No --print: runs interactively, stays alive across turns, waits at stdin between turns
-    const proc = spawn("claude", args, {
-      cwd,
-      env: { ...process.env },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
     const session: Session = {
-      process: proc,
       callback,
       startedAt: new Date().toLocaleString(),
       messageCount: 0,
       cwd,
+      sessionId: null,
       waitingForInput: !initialPrompt,
       active: true,
       pendingMessage: null,
+      abortController: null,
     };
 
     this.sessions.set(channelId, session);
-    this.attachHandlers(channelId, session);
+    console.log(`[${channelId}] Session created in ${cwd}`);
 
-    // Kick off with initial prompt, or wait for user's first message
-    if (initialPrompt && proc.stdin && !proc.stdin.destroyed) {
-      session.messageCount = 1;
-      proc.stdin.write(initialPrompt + "\n");
+    if (initialPrompt) {
+      this.runTurn(channelId, session, initialPrompt);
     }
   }
 
-  private attachHandlers(channelId: string, session: Session) {
-    const rl = readline.createInterface({ input: session.process.stdout! });
-    let accumulatedText = "";
-    let lastToolDesc = "";
-    let flushTimer: NodeJS.Timeout | null = null;
+  private async runTurn(channelId: string, session: Session, prompt: string) {
+    session.waitingForInput = false;
+    session.messageCount++;
 
-    // Serial async queue — ensures readline events are processed in order
-    // even though handlers are async (readline doesn't respect backpressure)
-    let lineQueue: string[] = [];
-    let processingLines = false;
+    const abortController = new AbortController();
+    session.abortController = abortController;
+
+    const options: any = {
+      outputFormat: "stream-json",
+      cwd: session.cwd,
+    };
+
+    if (session.sessionId) {
+      options.resume = session.sessionId;
+    } else if (process.env.CLAUDE_CONTINUE === "true") {
+      options.continue = true;
+    }
+
+    if (process.env.CLAUDE_SKIP_PERMISSIONS === "true") {
+      options.permissionMode = "bypassPermissions";
+    }
+
+    console.log(`[${channelId}] Turn started: "${prompt.substring(0, 80)}"${session.sessionId ? ` (resume ${session.sessionId.substring(0, 8)}...)` : ""}`);
+
+    let accumulatedText = "";
+    let flushTimer: NodeJS.Timeout | null = null;
+    let lastToolDesc = "";
 
     const flushText = async () => {
       if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
@@ -107,123 +97,73 @@ export class SessionManager {
       }
     };
 
-    const processLine = async (line: string) => {
-      if (!line.trim()) return;
+    try {
+      for await (const message of query({ prompt, abortController, options })) {
+        if (!session.active) break;
 
-      let event: any;
-      try { event = JSON.parse(line); }
-      catch {
-        accumulatedText += line + "\n";
-        if (flushTimer) clearTimeout(flushTimer);
-        flushTimer = setTimeout(flushText, 1200);
-        return;
-      }
+        // Capture session ID
+        if ((message as any).session_id && !session.sessionId) {
+          session.sessionId = (message as any).session_id;
+          console.log(`[${channelId}] Got session_id: ${session.sessionId}`);
+        }
 
-      if (event.type === "assistant") {
-        for (const block of (event.message?.content || [])) {
-          if (block.type === "text" && block.text?.trim()) {
-            accumulatedText += block.text;
-            if (flushTimer) clearTimeout(flushTimer);
-            flushTimer = setTimeout(flushText, 1200);
-          } else if (block.type === "tool_use") {
-            await flushText();
-            const desc = formatToolUse(block);
-            if (desc !== lastToolDesc) {
-              lastToolDesc = desc;
-              await session.callback({ type: "tool_use", content: desc });
+        if (message.type === "assistant") {
+          const content = (message as any).message?.content || [];
+          for (const block of content) {
+            if (block.type === "text" && block.text?.trim()) {
+              accumulatedText += block.text;
+              if (flushTimer) clearTimeout(flushTimer);
+              flushTimer = setTimeout(flushText, 1200);
+            } else if (block.type === "tool_use") {
+              await flushText();
+              const desc = formatToolUse(block);
+              if (desc !== lastToolDesc) {
+                lastToolDesc = desc;
+                await session.callback({ type: "tool_use", content: desc });
+              }
             }
           }
+        } else if (message.type === "result") {
+          await flushText();
+          console.log(`[${channelId}] Turn complete (cost: $${(message as any).total_cost_usd?.toFixed(4) || "?"})`);
         }
-
-      } else if (event.type === "result") {
-        // ← KEY MOMENT: Claude finished a turn and is now idle on stdin
-        await flushText();
-
-        // If a message was queued while Claude was busy, auto-send it now
-        if (session.pendingMessage !== null) {
-          const queued = session.pendingMessage;
-          session.pendingMessage = null;
-          session.messageCount++;
-          if (session.process.stdin && !session.process.stdin.destroyed) {
-            session.process.stdin.write(queued + "\n");
-          }
-          // Don't emit "waiting" — Claude is immediately resuming
-        } else {
-          session.waitingForInput = true;
-          await session.callback({ type: "waiting" });
-        }
-
-      } else if (event.type === "system" && event.subtype === "init") {
-        // Startup noise — ignore
       }
-    };
-
-    const drainQueue = async () => {
-      if (processingLines) return;
-      processingLines = true;
-      while (lineQueue.length > 0) {
-        const line = lineQueue.shift()!;
-        try { await processLine(line); } catch (err) { console.error(`[${channelId}] line error:`, err); }
+    } catch (err: any) {
+      if (err.name === "AbortError" || !session.active) {
+        return; // Session was ended by user
       }
-      processingLines = false;
-    };
-
-    rl.on("line", (line) => {
-      lineQueue.push(line);
-      drainQueue();
-    });
-
-    session.process.stderr!.on("data", (data) => {
-      const text = data.toString().trim();
-      if (text && !text.includes("Loaded") && !text.includes("cwd:") && !text.includes("MCP")) {
-        console.error(`[${channelId}] stderr:`, text);
-      }
-    });
-
-    session.process.on("close", async (code) => {
-      if (flushTimer) clearTimeout(flushTimer);
-      await flushText();
-      if (!session.active) return;
-      session.active = false;
-      if (code !== 0 && code !== null) {
-        await session.callback({ type: "error", content: `Claude exited with code ${code}` });
-      } else {
-        await session.callback({ type: "complete" });
-      }
-      this.sessions.delete(channelId);
-    });
-
-    session.process.on("error", async (err) => {
-      session.active = false;
+      console.error(`[${channelId}] Turn error:`, err.message);
       await session.callback({ type: "error", content: err.message });
+      session.active = false;
       this.sessions.delete(channelId);
-    });
+      return;
+    }
+
+    session.abortController = null;
+
+    if (!session.active) return;
+
+    // Turn complete — check for queued message
+    if (session.pendingMessage !== null) {
+      const queued = session.pendingMessage;
+      session.pendingMessage = null;
+      this.runTurn(channelId, session, queued);
+    } else {
+      session.waitingForInput = true;
+      await session.callback({ type: "waiting" });
+    }
   }
 
-  /**
-   * Send a user message to the session.
-   *
-   * "accepted"  — Claude was waiting, message sent, session resumes
-   * "queued"    — Claude is mid-turn; message saved and will auto-send when Claude finishes
-   * "no_session" — no session in this channel
-   */
   sendMessage(channelId: string, text: string): "accepted" | "queued" | "no_session" {
     const session = this.sessions.get(channelId);
     if (!session) return "no_session";
 
     if (!session.waitingForInput) {
-      // Queue the message — will be sent automatically when Claude's turn ends
       session.pendingMessage = text;
       return "queued";
     }
 
-    if (!session.process.stdin || session.process.stdin.destroyed) {
-      return "no_session";
-    }
-
-    session.waitingForInput = false;
-    session.messageCount++;
-    session.process.stdin.write(text + "\n");
+    this.runTurn(channelId, session, text);
     return "accepted";
   }
 
@@ -231,7 +171,9 @@ export class SessionManager {
     const session = this.sessions.get(channelId);
     if (!session) return;
     session.active = false;
-    try { session.process.kill("SIGTERM"); } catch {}
+    if (session.abortController) {
+      session.abortController.abort();
+    }
     this.sessions.delete(channelId);
   }
 
