@@ -85,14 +85,24 @@ export class SessionManager {
     console.log(`[${channelId}] Turn started: "${prompt.substring(0, 80)}"${session.sessionId ? ` (resume ${session.sessionId.substring(0, 8)}...)` : ""}`);
 
     let accumulatedText = "";
-    let flushTimer: NodeJS.Timeout | null = null;
-    let lastToolDesc = "";
+    let textFlushTimer: NodeJS.Timeout | null = null;
+    let accumulatedTools: string[] = [];
+    let toolFlushTimer: NodeJS.Timeout | null = null;
 
     const flushText = async () => {
-      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      if (textFlushTimer) { clearTimeout(textFlushTimer); textFlushTimer = null; }
       if (accumulatedText.trim()) {
         await session.callback({ type: "text", content: accumulatedText.trim() });
         accumulatedText = "";
+      }
+    };
+
+    const flushTools = async () => {
+      if (toolFlushTimer) { clearTimeout(toolFlushTimer); toolFlushTimer = null; }
+      if (accumulatedTools.length > 0) {
+        const batch = accumulatedTools.join("\n");
+        accumulatedTools = [];
+        await session.callback({ type: "tool_use", content: batch });
       }
     };
 
@@ -118,19 +128,23 @@ export class SessionManager {
           console.log(`[${channelId}] Assistant blocks: ${content.map((b: any) => b.type).join(", ") || "(empty)"}`);
           for (const block of content) {
             if (block.type === "text" && block.text?.trim()) {
+              await flushTools();
               accumulatedText += block.text;
-              if (flushTimer) clearTimeout(flushTimer);
-              flushTimer = setTimeout(flushText, 1200);
+              if (textFlushTimer) clearTimeout(textFlushTimer);
+              textFlushTimer = setTimeout(flushText, 1200);
             } else if (block.type === "tool_use") {
               await flushText();
               const desc = formatToolUse(block);
-              if (desc !== lastToolDesc) {
-                lastToolDesc = desc;
-                await session.callback({ type: "tool_use", content: desc });
+              // Deduplicate consecutive identical tool descriptions
+              if (accumulatedTools.length === 0 || accumulatedTools[accumulatedTools.length - 1] !== desc) {
+                accumulatedTools.push(desc);
               }
+              if (toolFlushTimer) clearTimeout(toolFlushTimer);
+              toolFlushTimer = setTimeout(flushTools, 1500);
             }
           }
         } else if (message.type === "result") {
+          await flushTools();
           await flushText();
           const cost = (message as any).total_cost_usd;
           console.log(`[${channelId}] Turn complete (cost: $${cost?.toFixed(4) || "?"})`);

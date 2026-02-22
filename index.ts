@@ -35,6 +35,39 @@ async function postToSlack(channelId: string, fn: () => Promise<void>) {
   entry.processing = false;
 }
 
+// Fun spinner verbs (à la Claude Code CLI)
+const SPINNER_VERBS = [
+  "Accomplishing", "Actioning", "Architecting", "Baking", "Beboppin'",
+  "Befuddling", "Bloviating", "Boogieing", "Boondoggling", "Booping",
+  "Bootstrapping", "Brewing", "Canoodling", "Caramelizing", "Cascading",
+  "Cerebrating", "Choreographing", "Churning", "Clauding", "Cogitating",
+  "Combobulating", "Composing", "Computing", "Concocting", "Contemplating",
+  "Cooking", "Crafting", "Crunching", "Crystallizing", "Deciphering",
+  "Deliberating", "Dilly-dallying", "Discombobulating", "Doodling",
+  "Effecting", "Elucidating", "Enchanting", "Envisioning", "Fermenting",
+  "Fiddle-faddling", "Finagling", "Flibbertigibbeting", "Flummoxing",
+  "Forging", "Frolicking", "Gallivanting", "Garnishing", "Generating",
+  "Germinating", "Grooving", "Harmonizing", "Hatching", "Hullaballooing",
+  "Ideating", "Imagining", "Improvising", "Incubating", "Inferring",
+  "Jitterbugging", "Julienning", "Kneading", "Lollygagging", "Manifesting",
+  "Marinating", "Meandering", "Metamorphosing", "Moonwalking", "Moseying",
+  "Mulling", "Musing", "Noodling", "Orchestrating", "Perambulating",
+  "Percolating", "Philosophising", "Pondering", "Pontificating",
+  "Prestidigitating", "Processing", "Puzzling", "Quantumizing",
+  "Razzle-dazzling", "Razzmatazzing", "Recombobulating", "Reticulating",
+  "Ruminating", "Sauteing", "Scampering", "Schlepping", "Shenaniganing",
+  "Shimmying", "Simmering", "Skedaddling", "Sketching", "Smooshing",
+  "Spelunking", "Spinning", "Sprouting", "Synthesizing", "Tinkering",
+  "Tomfoolering", "Topsy-turvying", "Transmuting", "Undulating",
+  "Unfurling", "Vibing", "Waddling", "Wandering", "Whatchamacalliting",
+  "Whirlpooling", "Whisking", "Wibbling", "Wrangling", "Zesting",
+  "Zigzagging",
+];
+
+function randomSpinner(): string {
+  return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)];
+}
+
 // Shared session-start logic used by both !new and natural language
 function sessionCallback(channelId: string) {
   return async (event: SessionEvent) => {
@@ -217,7 +250,7 @@ app.message(async ({ message, say }) => {
   if (result === "queued") {
     await say("⏳ _Claude is still working — your message is queued and will be sent when this turn finishes._");
   } else if (result === "accepted") {
-    await say("⏳ _Working on it..._");
+    await say(`⏳ _${randomSpinner()}..._`);
   }
 });
 
