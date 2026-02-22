@@ -4,6 +4,7 @@ import type { Options, Query } from "@anthropic-ai/claude-agent-sdk";
 export type SessionEvent =
   | { type: "text"; content: string }
   | { type: "tool_use"; content: string }
+  | { type: "heartbeat" }
   | { type: "waiting" }
   | { type: "error"; content: string };
 
@@ -88,12 +89,29 @@ export class SessionManager {
     let textFlushTimer: NodeJS.Timeout | null = null;
     let accumulatedTools: string[] = [];
     let toolFlushTimer: NodeJS.Timeout | null = null;
+    let heartbeatTimer: NodeJS.Timeout | null = null;
+
+    const HEARTBEAT_INTERVAL = 120_000; // 2 minutes
+
+    const resetHeartbeat = () => {
+      if (heartbeatTimer) clearTimeout(heartbeatTimer);
+      heartbeatTimer = setTimeout(async function beat() {
+        if (!session.active || !session.activeQuery) return;
+        await session.callback({ type: "heartbeat" });
+        heartbeatTimer = setTimeout(beat, HEARTBEAT_INTERVAL);
+      }, HEARTBEAT_INTERVAL);
+    };
+
+    const stopHeartbeat = () => {
+      if (heartbeatTimer) { clearTimeout(heartbeatTimer); heartbeatTimer = null; }
+    };
 
     const flushText = async () => {
       if (textFlushTimer) { clearTimeout(textFlushTimer); textFlushTimer = null; }
       if (accumulatedText.trim()) {
         await session.callback({ type: "text", content: accumulatedText.trim() });
         accumulatedText = "";
+        resetHeartbeat();
       }
     };
 
@@ -103,8 +121,11 @@ export class SessionManager {
         const batch = accumulatedTools.join("\n");
         accumulatedTools = [];
         await session.callback({ type: "tool_use", content: batch });
+        resetHeartbeat();
       }
     };
+
+    resetHeartbeat();
 
     try {
       const q = query({ prompt, options });
@@ -146,11 +167,13 @@ export class SessionManager {
         } else if (message.type === "result") {
           await flushTools();
           await flushText();
+          stopHeartbeat();
           const cost = (message as any).total_cost_usd;
           console.log(`[${channelId}] Turn complete (cost: $${cost?.toFixed(4) || "?"})`);
         }
       }
     } catch (err: any) {
+      stopHeartbeat();
       if (err.name === "AbortError" || !session.active) {
         return; // Session was ended by user
       }

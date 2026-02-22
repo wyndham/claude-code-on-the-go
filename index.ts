@@ -86,6 +86,13 @@ function sessionCallback(channelId: string) {
           text: `🔧 ${event.content}`,
         }) as Promise<any>
       );
+    } else if (event.type === "heartbeat") {
+      await postToSlack(channelId, () =>
+        app.client.chat.postMessage({
+          channel: channelId,
+          text: `⏳ _Still ${randomSpinner().toLowerCase()}..._`,
+        }) as Promise<any>
+      );
     } else if (event.type === "waiting") {
       await postToSlack(channelId, () =>
         app.client.chat.postMessage({
